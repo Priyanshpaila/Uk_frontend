@@ -1,0 +1,17 @@
+{
+  "models": [
+    {
+      "title": "Llama 3.1 8B local",
+      "provider": "ollama",
+      "model": "llama3.1:8b"
+    }
+  ],
+  "embeddings": {
+    "provider": "ollama",
+    "model": "nomic-embed-text"
+  },
+  "docs": [
+    { "name": "frontend", "path": "." },
+    { "name": "backend", "path": "pharmacy-api-full" }
+  ]
+}
