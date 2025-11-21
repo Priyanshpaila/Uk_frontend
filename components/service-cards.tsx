@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import Link from "next/link";
 
 type ApiService = {
   _id: string;
@@ -59,10 +60,13 @@ export function ServiceCards() {
         }
 
         const json: ApiResponse = await res.json();
+        console.log("Fetched services:", json);
         setServices(json.data || []);
       } catch (err: any) {
         console.error(err);
-        setError(err?.message || "Something went wrong while fetching services");
+        setError(
+          err?.message || "Something went wrong while fetching services"
+        );
       } finally {
         setLoading(false);
       }
@@ -101,9 +105,7 @@ export function ServiceCards() {
         )}
 
         {error && !loading && (
-          <div className="text-center text-red-500 py-8">
-            {error}
-          </div>
+          <div className="text-center text-red-500 py-8">{error}</div>
         )}
 
         {!loading && !error && services.length === 0 && (
@@ -165,13 +167,15 @@ export function ServiceCards() {
 
                   {/* Button pinned at bottom */}
                   <div className="mt-auto pt-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="w-full justify-center rounded-xl border-blue-600/80 bg-blue-50/40 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-50 hover:text-blue-800"
-                    >
-                      {service.cta_text || "Learn More"}
-                    </Button>
+                    <Link href={`/private-services/${service.slug}`}>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-full justify-center rounded-xl border-blue-600/80 bg-blue-50/40 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-50 hover:text-blue-800"
+                      >
+                        {service.cta_text || "Learn More"}
+                      </Button>
+                    </Link>
                   </div>
                 </Card>
               );
