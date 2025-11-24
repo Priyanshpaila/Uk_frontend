@@ -3,16 +3,17 @@
 import * as React from 'react';
 import { useRouter, useSearchParams, useParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
+import { useCart } from '@/components/cart-context';
 
 // Local fallback type for our flow steps
 export type StepKey = 'treatments' | 'login' | 'raf' | 'calendar' | 'payment' | 'success';
 
 const TreatmentsStep = dynamic(() => import('./steps/TreatmentsStep'), { ssr: false });
 const LoginStep      = dynamic(() => import('./steps/LoginStep'),      { ssr: false });
-const RafStep        = dynamic(() => import('./steps/RafStep'),    { ssr: false });
+const RafStep        = dynamic(() => import('./steps/RafStep'),        { ssr: false });
 const CalendarStep   = dynamic(() => import('./steps/CalendarStep'),   { ssr: false });
 const PaymentStep    = dynamic(() => import('./steps/PaymentStep'),    { ssr: false });
-const SuccessStep    = dynamic(() => import('./steps/SuccessStep'), { ssr: false });
+const SuccessStep    = dynamic(() => import('./steps/SuccessStep'),    { ssr: false });
 
 const DEFAULT_FLOW: StepKey[] = ['treatments','login','raf','calendar','payment','success'];
 
@@ -91,6 +92,17 @@ export default function BookServicePage() {
   const slug = params?.slug ?? '';
 
   const isLoggedIn = useAuthStatus();
+
+  // 🛒 Read cart state (for gating treatments step)
+  const cart = useCart() as any;
+  const cartItems: any[] =
+    Array.isArray(cart?.items)
+      ? cart.items
+      : Array.isArray(cart?.state?.items)
+      ? cart.state.items
+      : [];
+  const hasCartItems = cartItems.length > 0;
+
   const flow = React.useMemo<StepKey[]>(
     () => (isLoggedIn ? DEFAULT_FLOW.filter(s => s !== 'login') : DEFAULT_FLOW),
     [isLoggedIn]
@@ -156,6 +168,32 @@ export default function BookServicePage() {
     }
   }
 
+  // 🔒 Step guard: decide if user can move forward from the current step
+  const canProceedFrom = React.useCallback(
+    (step: StepKey): { ok: boolean; message?: string } => {
+      // 1) Treatments: must have at least one item in cart
+      if (step === 'treatments' && !hasCartItems) {
+        return {
+          ok: false,
+          message: 'Please add at least one treatment/medicine to your basket before continuing.',
+        };
+      }
+
+      // 2) Login: must actually be logged in
+      if (step === 'login' && !isLoggedIn) {
+        return {
+          ok: false,
+          message: 'Please log in or create an account before continuing.',
+        };
+      }
+
+      // 3) Other steps (raf, calendar, payment) are guarded inside their own components
+      //    or via bookSelectedIfNeeded for calendar, so we allow here.
+      return { ok: true };
+    },
+    [hasCartItems, isLoggedIn]
+  );
+
   // If the URL points at "login" but the user is authenticated, jump to the next logical step.
   React.useEffect(() => {
     if (!isLoggedIn) return;
@@ -187,7 +225,15 @@ export default function BookServicePage() {
     q.set('step', next);
     router.replace(`/private-services/${slug}/book?${q.toString()}`);
   };
+
   const goNext = async () => {
+    // 🔒 First, generic guard per step
+    const guard = canProceedFrom(currentStep);
+    if (!guard.ok) {
+      if (guard.message) alert(guard.message);
+      return;
+    }
+
     // When leaving the calendar step, create the appointment server-side first
     if (currentStep === 'calendar') {
       const { ok, message } = await bookSelectedIfNeeded();
@@ -196,10 +242,15 @@ export default function BookServicePage() {
         return;
       }
     }
+
     const n = flow[currentIndex + 1];
     if (n) goTo(n);
   };
-  const goPrev = () => { const p = flow[currentIndex - 1]; if (p) goTo(p); };
+
+  const goPrev = () => {
+    const p = flow[currentIndex - 1];
+    if (p) goTo(p);
+  };
 
   const StepMap: Record<Exclude<StepKey,'treatments'>, React.ComponentType<any>> = {
     login: LoginStep,
@@ -208,16 +259,55 @@ export default function BookServicePage() {
     payment: PaymentStep,
     success: SuccessStep,
   };
-  const Current = currentStep === 'treatments' ? null : StepMap[currentStep as Exclude<StepKey,'treatments'>];
+  const Current =
+    currentStep === 'treatments' ? null : StepMap[currentStep as keyof typeof StepMap];
+
+  // UI: compute if Next should be disabled (for UX, we still hard-guard in goNext)
+  const nextDisabled = React.useMemo(() => {
+    if (currentIndex >= flow.length - 1) return true;
+
+    if (currentStep === 'treatments' && !hasCartItems) return true;
+    if (currentStep === 'login' && !isLoggedIn) return true;
+
+    // calendar: handled via bookSelectedIfNeeded in goNext, but keep button enabled
+    // raf & payment: usually handled internally (their own Continue/Pay buttons),
+    // but we leave Next enabled here and rely on onContinue navigation from inside.
+    return false;
+  }, [currentIndex, flow.length, currentStep, hasCartItems, isLoggedIn]);
 
   return (
     <div style={{ padding: '24px 16px 64px' }}>
       {/* Header pills */}
-      <div style={{ maxWidth: 980, margin: '0 auto 16px', display: 'flex', gap: 10, alignItems: 'center' }}>
-        <a href={`/private-services/${slug}`} style={{ opacity: 0.8 }}>← Back</a>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+      <div
+        style={{
+          maxWidth: 980,
+          margin: '0 auto 16px',
+          display: 'flex',
+          gap: 10,
+          alignItems: 'center',
+        }}
+      >
+        <a href={`/private-services/${slug}`} style={{ opacity: 0.8 }}>
+          ← Back
+        </a>
+        <div
+          style={{
+            marginLeft: 'auto',
+            display: 'flex',
+            gap: 10,
+            flexWrap: 'wrap',
+          }}
+        >
           {flow.map((s, i) => (
-            <div key={s} style={{ padding: '6px 10px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.12)', opacity: i === currentIndex ? 1 : 0.55 }}>
+            <div
+              key={s}
+              style={{
+                padding: '6px 10px',
+                borderRadius: 999,
+                border: '1px solid rgba(255,255,255,0.12)',
+                opacity: i === currentIndex ? 1 : 0.55,
+              }}
+            >
               {`${i + 1}. ${
                 s === 'treatments'
                   ? 'Treatments'
@@ -231,14 +321,22 @@ export default function BookServicePage() {
       </div>
 
       {/* Current step */}
-      {currentStep === 'treatments'
-        ? <TreatmentsStep serviceSlug={slug} onContinue={goNext} />
-        : (Current ? <Current /> : null)
-      }
+      {currentStep === 'treatments' ? (
+        <TreatmentsStep serviceSlug={slug} onContinue={goNext} />
+      ) : Current ? (
+        <Current />
+      ) : null}
 
       {/* Footer controls */}
       {currentStep !== 'success' && (
-        <div style={{ maxWidth: 980, margin: '24px auto 0', display: 'flex', justifyContent: 'space-between' }}>
+        <div
+          style={{
+            maxWidth: 980,
+            margin: '24px auto 0',
+            display: 'flex',
+            justifyContent: 'space-between',
+          }}
+        >
           <button
             onClick={goPrev}
             disabled={currentIndex === 0}
@@ -257,15 +355,15 @@ export default function BookServicePage() {
           </button>
           <button
             onClick={goNext}
-            disabled={currentIndex >= flow.length - 1}
+            disabled={nextDisabled}
             style={{
               backgroundColor: '#10b981',
               color: '#fff',
               border: 'none',
               borderRadius: 9999,
               padding: '8px 20px',
-              cursor: currentIndex >= flow.length - 1 ? 'not-allowed' : 'pointer',
-              opacity: currentIndex >= flow.length - 1 ? 0.5 : 1,
+              cursor: nextDisabled ? 'not-allowed' : 'pointer',
+              opacity: nextDisabled ? 0.5 : 1,
               transition: 'all 0.2s ease',
             }}
           >

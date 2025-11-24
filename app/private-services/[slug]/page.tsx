@@ -4,9 +4,9 @@ import { notFound } from "next/navigation";
 import Image from "next/image";
 import parse, {
   domToReact,
-  type HTMLReactParserOptions,
-  type Element,
+  Element as HtmlElement,
   type DOMNode,
+  type HTMLReactParserOptions,
 } from "html-react-parser";
 
 export const revalidate = 0;
@@ -44,7 +44,7 @@ const API_BASE =
 
 async function fetchPageBySlug(slug: string): Promise<Page> {
   if (!API_BASE) {
-    throw new Error("Missing NEXT_PUBLIC_API_BASE env var");
+    throw new Error("Missing NEXT_PUBLIC_API_BASE_URL env var");
   }
 
   const res = await fetch(
@@ -112,7 +112,17 @@ function resolveMediaUrl(path: string | null | undefined): string {
   }`;
 }
 
-/* ------------ Styled HTML renderer (for dangerous HTML) ------------ */
+// Grab plain text from a node tree (used to detect empty strong/span wrappers)
+function getNodeText(node: any): string {
+  if (!node) return "";
+  if (node.type === "text") return node.data ?? "";
+  if (node.children && Array.isArray(node.children)) {
+    return node.children.map(getNodeText).join("");
+  }
+  return "";
+}
+
+/* ------------ Styled HTML renderer (styles your content HTML) ------------ */
 
 function RichContent({ html }: { html: string }) {
   if (!html) return null;
@@ -121,8 +131,110 @@ function RichContent({ html }: { html: string }) {
     replace(domNode) {
       if (domNode.type !== "tag") return;
 
-      const el = domNode as Element;
-      const children = domToReact(
+      const el = domNode as HtmlElement;
+      const classAttr = el.attribs?.class || "";
+      const isCentered = classAttr.split(" ").includes("ql-align-center");
+
+      /* ---------- Special-case: paragraphs that are a CTA button row ---------- */
+      if (el.name === "p") {
+        const children = el.children || [];
+
+        const hasAnchor = children.some(
+          (child) =>
+            child.type === "tag" &&
+            (child as HtmlElement).name === "a"
+        );
+
+        const isButtonRow =
+          hasAnchor &&
+          children.every((child) => {
+            if (child.type === "text") {
+              const text = (child as any).data ?? "";
+              return !text.trim();
+            }
+            if (child.type === "tag") {
+              const name = (child as HtmlElement).name;
+              if (name === "a" || name === "br") return true;
+              if (name === "strong" || name === "span") {
+                const t = getNodeText(child);
+                return !t.trim();
+              }
+            }
+            return false;
+          });
+
+        // e.g. your "Start now / Reorder" line
+        if (isButtonRow) {
+          const anchors = children.filter(
+            (child) =>
+              child.type === "tag" &&
+              (child as HtmlElement).name === "a"
+          ) as HtmlElement[];
+
+          return (
+            <div className="my-6 flex flex-wrap justify-center gap-4">
+              {anchors.map((a, idx) => {
+                const href = a.attribs.href || "#";
+                const target = a.attribs.target;
+                const rel =
+                  target === "_blank"
+                    ? "noopener noreferrer"
+                    : undefined;
+
+                const label = domToReact(
+                  (a.children || []) as unknown as DOMNode[],
+                  options
+                );
+
+                return (
+                  <a
+                    key={idx}
+                    href={href}
+                    target={target}
+                    rel={rel}
+                    className="inline-flex items-center justify-center rounded-full bg-emerald-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md transition hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
+                  >
+                    {label}
+                  </a>
+                );
+              })}
+            </div>
+          );
+        }
+
+        // Normal paragraph (centered if ql-align-center)
+        const childrenReact = domToReact(
+          (el.children || []) as unknown as DOMNode[],
+          options
+        );
+
+        const hasNonBrTag = children.some(
+          (child) =>
+            child.type === "tag" &&
+            (child as HtmlElement).name !== "br"
+        );
+        const textContent = children
+          .map((c) => getNodeText(c))
+          .join("");
+
+        // Pure spacer paragraphs (just <br> / spaces) -> small vertical gap
+        if (!hasNonBrTag && !textContent.trim()) {
+          return <div className="h-4 md:h-6" />;
+        }
+
+        return (
+          <p
+            className={`mb-3 text-base leading-relaxed text-slate-700 ${
+              isCentered ? "text-center" : ""
+            }`}
+          >
+            {childrenReact}
+          </p>
+        );
+      }
+
+      // For everything else, render children then wrap in styled tag
+      const childrenReact = domToReact(
         (el.children || []) as unknown as DOMNode[],
         options
       );
@@ -130,85 +242,78 @@ function RichContent({ html }: { html: string }) {
       switch (el.name) {
         case "h1":
           return (
-            <h1 className="mb-4 mt-2 text-center text-3xl font-bold tracking-tight text-slate-900 md:text-4xl">
-              {children}
+            <h1 className="mb-4 mt-2 text-center text-3xl font-bold tracking-tight text-emerald-600 md:text-4xl">
+              {childrenReact}
             </h1>
           );
 
         case "h2":
           return (
             <h2 className="mb-4 mt-8 text-center text-2xl font-semibold tracking-tight text-slate-900 md:text-3xl">
-              {children}
+              {childrenReact}
             </h2>
           );
 
         case "h3":
           return (
             <h3 className="mt-8 mb-3 text-xl font-semibold text-slate-900">
-              {children}
+              {childrenReact}
             </h3>
           );
 
         case "h4":
           return (
             <h4 className="mt-6 mb-3 text-lg font-semibold text-slate-900">
-              {children}
+              {childrenReact}
             </h4>
-          );
-
-        case "p":
-          return (
-            <p className="mb-3 text-base leading-relaxed text-slate-700">
-              {children}
-            </p>
           );
 
         case "strong":
           return (
             <strong className="font-semibold text-slate-900">
-              {children}
+              {childrenReact}
             </strong>
           );
 
         case "em":
-          return <em className="text-slate-800">{children}</em>;
+          return <em className="text-slate-800">{childrenReact}</em>;
 
         case "ul":
           return (
             <ul className="my-4 ml-6 list-disc space-y-1 text-slate-700">
-              {children}
+              {childrenReact}
             </ul>
           );
 
         case "ol":
           return (
             <ol className="my-4 ml-6 list-decimal space-y-1 text-slate-700">
-              {children}
+              {childrenReact}
             </ol>
           );
 
         case "li":
           return (
             <li className="leading-relaxed text-slate-700">
-              {children}
+              {childrenReact}
             </li>
           );
 
         case "a": {
+          // Inline links (inside normal text)
           const href = el.attribs.href || "#";
           const target = el.attribs.target;
           const rel =
             target === "_blank" ? "noopener noreferrer" : undefined;
 
-          // Button-like CTA styling
           return (
             <a
               href={href}
               target={target}
               rel={rel}
-              className="inline-flex items-center gap-1 rounded-full bg-blue-600 px-5 py-2 text-sm font-semibold text-white shadow-md transition hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+              className="font-semibold text-emerald-700 underline underline-offset-2 hover:text-emerald-800"
             >
-              {children}
+              {childrenReact}
             </a>
           );
         }
@@ -220,7 +325,7 @@ function RichContent({ html }: { html: string }) {
             <img
               src={src}
               alt={alt}
-              className="my-8 mx-auto max-h-72 w-auto max-w-full object-contain"
+              className="my-6 mx-auto max-h-80 w-auto max-w-full rounded-xl object-contain shadow-md"
             />
           );
         }
@@ -229,7 +334,7 @@ function RichContent({ html }: { html: string }) {
           return <br />;
 
         default:
-          return;
+          return; // let html-react-parser handle anything else
       }
     },
   };
@@ -239,11 +344,12 @@ function RichContent({ html }: { html: string }) {
 
 /* ------------ Page component ------------ */
 
-export default async function ServiceLanding(props: {
+export default async function ServiceLanding({
+  params,
+}: {
   params: ParamsPromise;
-  searchParams?: { [key: string]: string | string[] | undefined };
 }) {
-  const { slug } = await props.params;
+  const { slug } = await params;
   const page = await fetchPageBySlug(slug);
 
   const html = page.rendered_html || page.content || "";
@@ -256,53 +362,29 @@ export default async function ServiceLanding(props: {
   const blur = Number(bg?.blur ?? 12);
   const blurCls = blurClass(blur);
 
-  const showDebug = props.searchParams?.debug === "1";
-
-  // Simple layout if no background
+  // Simple layout if no background image configured
   if (!bgUrl || !bgEnabled) {
     return (
       <main className="mx-auto max-w-5xl px-4 py-10">
-        <header className="mb-8 text-center">
-          <h1 className="mb-2 text-3xl font-semibold text-slate-900 md:text-4xl">
+        {/* <header className="mb-8 text-left">
+          <h1 className="mb-2 text-3xl font-semibold text-emerald-600 md:text-4xl">
             {page.title}
           </h1>
           {page.description && (
-            <p className="mx-auto max-w-2xl text-sm text-slate-600 md:text-base">
+            <p className="max-w-2xl text-sm text-slate-700 md:text-base">
               {page.description}
             </p>
           )}
-        </header>
+        </header> */}
 
-        <section className="rounded-3xl bg-white p-6 shadow-lg ring-1 ring-slate-200 md:p-12">
+        <section className="rounded-4xl bg-amber-50/95 p-6 shadow-xl ring-1 ring-black/5 md:p-10">
           <RichContent html={html} />
         </section>
-
-        {showDebug && (
-          <div className="fixed bottom-4 right-4 z-50 max-w-md rounded-lg border bg-white/90 p-3 text-xs shadow-xl">
-            <div className="mb-1 font-semibold">BG Debug</div>
-            <pre className="whitespace-pre-wrap break-all">
-              {JSON.stringify(
-                {
-                  pageId: page._id,
-                  slug: page.slug,
-                  bgEnabled,
-                  bgUrl,
-                  resolvedBgUrl,
-                  overlayPct,
-                  blur,
-                  hasHtml: Boolean(html),
-                },
-                null,
-                2
-              )}
-            </pre>
-          </div>
-        )}
       </main>
     );
   }
 
-  // Fancy layout with background
+  // Layout with hero background image (like Travel Clinic reference)
   return (
     <div className="relative min-h-screen bg-black">
       <div className="pointer-events-none absolute inset-0">
@@ -321,7 +403,7 @@ export default async function ServiceLanding(props: {
       </div>
 
       <div className="relative z-10 mx-auto max-w-5xl px-4 py-10">
-        <header className="mb-6 text-center text-white">
+        {/* <header className="mb-6 text-center text-white">
           <h1 className="mb-2 text-3xl font-semibold md:text-4xl">
             {page.title}
           </h1>
@@ -330,46 +412,14 @@ export default async function ServiceLanding(props: {
               {page.description}
             </p>
           )}
-        </header>
+        </header> */}
 
         <div
-          className={`rounded-3xl bg-white/80 ${blurCls} p-6 shadow-xl ring-1 ring-black/10 md:p-12`}
+          className={`rounded-4xl bg-amber-50/95 ${blurCls} p-6 shadow-2xl ring-1 ring-black/10 md:p-10`}
         >
           <RichContent html={html} />
         </div>
       </div>
-
-      {showDebug && (
-        <div className="fixed bottom-4 right-4 z-50 max-w-md rounded-lg border bg-white/90 p-3 text-xs shadow-xl">
-          <div className="mb-1 font-semibold">BG Debug</div>
-          <pre className="whitespace-pre-wrap break-all">
-            {JSON.stringify(
-              {
-                pageId: page._id,
-                slug: page.slug,
-                bgEnabled,
-                bgUrl,
-                resolvedBgUrl,
-                overlayPct,
-                blur,
-                hasHtml: Boolean(html),
-              },
-              null,
-              2
-            )}
-          </pre>
-          {resolvedBgUrl && (
-            <a
-              href={resolvedBgUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="underline"
-            >
-              Open image
-            </a>
-          )}
-        </div>
-      )}
     </div>
   );
 }
