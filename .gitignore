@@ -31,5 +31,5 @@ next-env.d.ts
 
 
 
-Dockerfile
-nginx.conf
+# Dockerfile
+# nginx.conf
