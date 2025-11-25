@@ -16,14 +16,14 @@ type WeekDay = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 type WeekConfig = {
   day: WeekDay;
   open: boolean;
-  start: string | null;       // "09:00"
-  end: string | null;         // "17:00"
+  start: string | null; // "09:00"
+  end: string | null; // "17:00"
   break_start: string | null; // "12:30"
-  break_end: string | null;   // "13:00"
+  break_end: string | null; // "13:00"
 };
 
 type OverrideConfig = {
-  date: string;         // "YYYY-MM-DD"
+  date: string; // "YYYY-MM-DD"
   open: boolean;
   start: string | null;
   end: string | null;
@@ -53,6 +53,17 @@ type DayMeta = {
 
 type CurrentUser = {
   _id: string;
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  phone?: string;
+  dob?: string;
+};
+
+type StoredUser = {
+  userId?: string;
+  _id?: string;
+  id?: string;
   firstName?: string;
   lastName?: string;
   email?: string;
@@ -90,12 +101,17 @@ function splitIsoToParts(iso: string): { date: string; time: string } {
   if (isNaN(d.getTime())) return { date: "", time: "" };
 
   const pad = (n: number) => String(n).padStart(2, "0");
-  const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(
+    d.getDate()
+  )}`;
   const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   return { date, time };
 }
 
-function persistAppointment(iso: string, opts?: { label?: string; serviceSlug?: string }) {
+function persistAppointment(
+  iso: string,
+  opts?: { label?: string; serviceSlug?: string }
+) {
   const { date, time } = splitIsoToParts(iso);
   const pretty = new Date(iso).toLocaleString("en-GB", {
     weekday: "short",
@@ -305,6 +321,40 @@ function getAuthToken(): string | null {
   }
 }
 
+// 🔹 NEW: read stored user object from localStorage (your screenshot)
+function getStoredUser(): StoredUser | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw =
+      localStorage.getItem("user") ||
+      localStorage.getItem("user_data") ||
+      localStorage.getItem("pe_user") ||
+      localStorage.getItem("pe.user");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StoredUser;
+    return parsed || null;
+  } catch {
+    return null;
+  }
+}
+
+// 🔹 NEW: final user_id (localStorage first, then /me result)
+function resolveUserId(currentUser: CurrentUser | null): string | null {
+  const stored = getStoredUser();
+  const fromStored =
+    stored?.userId || stored?._id || stored?.id || null;
+  if (fromStored) return String(fromStored);
+  if (currentUser?._id) return String(currentUser._id);
+  return null;
+}
+
+// 🔹 NEW: random reference (you’ll replace later with your real generator)
+function generateReference(): string {
+  const now = new Date();
+  const random = Math.random().toString(36).slice(2, 8).toUpperCase();
+  return `ORD-${now.getFullYear()}-${random}`;
+}
+
 export default function CalendarStep({ serviceSlug }: { serviceSlug?: string }) {
   const params = useParams<{ slug: string }>();
   const slugFromRoute = (params?.slug as string) || "";
@@ -416,7 +466,7 @@ export default function CalendarStep({ serviceSlug }: { serviceSlug?: string }) 
     };
   }, [apiBase, effectiveServiceSlug]);
 
-  // 2) Fetch current user (for user_id + meta fields)
+  // 2) Fetch current user (for meta fields; user_id also comes from localStorage)
   useEffect(() => {
     let cancelled = false;
 
@@ -433,9 +483,9 @@ export default function CalendarStep({ serviceSlug }: { serviceSlug?: string }) 
         });
         if (!res.ok) return;
         const json = await res.json().catch(() => null);
-        if (!cancelled && json && json._id) {
+        if (!cancelled && json && (json._id || json.id || json.userId)) {
           setCurrentUser({
-            _id: json._id,
+            _id: json._id || json.id || json.userId,
             firstName: json.firstName || json.first_name,
             lastName: json.lastName || json.last_name,
             email: json.email,
@@ -505,6 +555,15 @@ export default function CalendarStep({ serviceSlug }: { serviceSlug?: string }) 
       return;
     }
 
+    // 🔹 Get final user_id (from localStorage.user OR /me fallback)
+    const finalUserId = resolveUserId(currentUser);
+    if (!finalUserId) {
+      setOrderError(
+        "Could not determine your user. Make sure you are logged in (user_id missing)."
+      );
+      return;
+    }
+
     const startDate = new Date(selectedIso);
     if (isNaN(startDate.getTime())) {
       setOrderError("Invalid appointment time selected.");
@@ -529,9 +588,7 @@ export default function CalendarStep({ serviceSlug }: { serviceSlug?: string }) 
           : Math.round((it.price ?? 0) * 100);
 
       const totalMinor =
-        typeof it.totalMinor === "number"
-          ? it.totalMinor
-          : unitMinor * qty;
+        typeof it.totalMinor === "number" ? it.totalMinor : unitMinor * qty;
 
       const variation =
         it.variation ||
@@ -576,14 +633,27 @@ export default function CalendarStep({ serviceSlug }: { serviceSlug?: string }) 
         }
       : undefined;
 
+    // merge user info from stored user + /me
+    const storedUser = getStoredUser();
     const userMeta: Record<string, any> = {};
-    if (currentUser) {
-      if (currentUser.firstName) userMeta.firstName = currentUser.firstName;
-      if (currentUser.lastName) userMeta.lastName = currentUser.lastName;
-      if (currentUser.email) userMeta.email = currentUser.email;
-      if (currentUser.phone) userMeta.phone = currentUser.phone;
-      if (currentUser.dob) userMeta.dob = currentUser.dob;
-    }
+
+    const firstName =
+      storedUser?.firstName ||
+      storedUser?.["first_name" as keyof StoredUser] ||
+      currentUser?.firstName;
+    const lastName =
+      storedUser?.lastName ||
+      storedUser?.["last_name" as keyof StoredUser] ||
+      currentUser?.lastName;
+    const email = storedUser?.email || currentUser?.email;
+    const phone = storedUser?.phone || currentUser?.phone;
+    const dob = storedUser?.dob || currentUser?.dob;
+
+    if (firstName) userMeta.firstName = firstName;
+    if (lastName) userMeta.lastName = lastName;
+    if (email) userMeta.email = email;
+    if (phone) userMeta.phone = phone;
+    if (dob) userMeta.dob = dob;
 
     const meta: Record<string, any> = {
       lines,
@@ -607,16 +677,22 @@ export default function CalendarStep({ serviceSlug }: { serviceSlug?: string }) 
       ...userMeta,
     };
 
+    // 🔹 NEW: generate random reference for now
+    const reference = generateReference();
+
     const body: any = {
+      user_id: finalUserId,
       schedule_id: scheduleId,
       service_id: schedule.service_id,
+      reference,
       start_at: selectedIso,
       end_at: endIso,
       meta,
+      payment_status: "pending",
     };
 
-    if (currentUser?._id) {
-      body.user_id = currentUser._id;
+    if (process.env.NODE_ENV !== "production") {
+      console.log("Creating order with body:", body);
     }
 
     setCreatingOrder(true);
@@ -648,18 +724,19 @@ export default function CalendarStep({ serviceSlug }: { serviceSlug?: string }) 
       }
 
       const orderId = json?._id ?? json?.id ?? null;
-      const reference = json?.reference ?? null;
+      const responseRef = json?.reference ?? reference;
 
       try {
         localStorage.setItem("order_last_body", JSON.stringify(body));
         if (orderId) localStorage.setItem("order_id", String(orderId));
-        if (reference) localStorage.setItem("order_reference", String(reference));
+        if (responseRef)
+          localStorage.setItem("order_reference", String(responseRef));
       } catch {}
 
       const qp = new URLSearchParams();
       qp.set("step", "payment");
       if (orderId) qp.set("order", String(orderId));
-      if (reference) qp.set("reference", String(reference));
+      if (responseRef) qp.set("reference", String(responseRef));
 
       router.push(
         `/private-services/${effectiveServiceSlug}/book?${qp.toString()}`
